@@ -45,6 +45,30 @@ document.querySelectorAll('.why-grid .why-card').forEach((card, i) => {
   card.style.transitionDelay = `${i * 60}ms`;
 });
 
+// ─── Products dropdown ────────────────────────
+const productsMenu  = document.getElementById('productsMenu');
+const dropdownToggle = productsMenu.querySelector('.dropdown-toggle');
+
+dropdownToggle.addEventListener('click', e => {
+  e.preventDefault();
+  const isOpen = productsMenu.classList.toggle('open');
+  dropdownToggle.setAttribute('aria-expanded', isOpen);
+});
+
+document.addEventListener('click', e => {
+  if (!productsMenu.contains(e.target)) {
+    productsMenu.classList.remove('open');
+    dropdownToggle.setAttribute('aria-expanded', false);
+  }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    productsMenu.classList.remove('open');
+    dropdownToggle.setAttribute('aria-expanded', false);
+  }
+});
+
 // ─── Contact form ─────────────────────────────
 const contactForm   = document.getElementById('contactForm');
 const formSuccess   = document.getElementById('formSuccess');
