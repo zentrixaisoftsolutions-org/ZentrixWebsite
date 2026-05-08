@@ -10,12 +10,19 @@ const navLinks  = document.getElementById('navLinks');
 
 hamburger.addEventListener('click', () => {
   navLinks.classList.toggle('open');
+  hamburger.classList.toggle('open');
   const isOpen = navLinks.classList.contains('open');
   hamburger.setAttribute('aria-expanded', isOpen);
+  document.body.style.overflow = isOpen ? 'hidden' : '';
 });
 
-navLinks.querySelectorAll('a').forEach(link => {
-  link.addEventListener('click', () => navLinks.classList.remove('open'));
+navLinks.querySelectorAll('a:not(.dropdown-toggle)').forEach(link => {
+  link.addEventListener('click', () => {
+    navLinks.classList.remove('open');
+    hamburger.classList.remove('open');
+    hamburger.setAttribute('aria-expanded', false);
+    document.body.style.overflow = '';
+  });
 });
 
 // ─── Scroll-reveal ────────────────────────────
