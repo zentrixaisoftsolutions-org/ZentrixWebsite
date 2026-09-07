@@ -1,0 +1,138 @@
+name: CI/CD
+
+# Validation runs on every push and PR to main. A production deploy to the
+# Hetzner server runs only after validation passes, and only on a push to main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Never let two deploys race; queue them instead of cancelling mid-deploy.
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate static site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tidy
+          npm install -g postcss postcss-cli
+
+      - name: Check HTML
+        # tidy exits 1 on warnings alone, which HTML5 markup trips constantly
+        # (unknown attributes, implied end tags). Only exit code 2 is a real
+        # parse error, so treat 1 as informational and fail on 2.
+        run: |
+          status=0
+          for f in $(find . -name '*.html' -not -path './.git/*'); do
+            echo "--- $f"
+            tidy -qe "$f" || rc=$?
+            if [ "${rc:-0}" -ge 2 ]; then status=1; fi
+            rc=0
+          done
+          exit $status
+
+      - name: Check CSS
+        # A parse check, not a linter. csslint (the obvious choice) is
+        # unmaintained and rejects valid CSS Grid as a syntax error, so it would
+        # fail every build; postcss parses modern CSS and throws only on genuine
+        # syntax errors -- the CSS equivalent of `node --check`.
+        run: |
+          NODE_PATH=$(npm root -g) node -e '
+            const postcss = require("postcss");
+            const fs = require("fs");
+            const path = require("path");
+            let failed = 0;
+            for (const f of fs.readdirSync("css").filter(f => f.endsWith(".css"))) {
+              const file = path.join("css", f);
+              try {
+                postcss.parse(fs.readFileSync(file, "utf8"), { from: file });
+                console.log("OK: " + file);
+              } catch (e) {
+                console.error("SYNTAX ERROR: " + e.message);
+                failed = 1;
+              }
+            }
+            process.exit(failed);
+          '
+
+      - name: Check JS syntax
+        run: |
+          for f in $(find js -name '*.js'); do
+            node --check "$f"
+          done
+
+      - name: Check local asset references resolve
+        # A broken css/ or js/ path is the most likely way this site ships
+        # visibly broken, and nothing else in the pipeline would catch it.
+        run: |
+          missing=0
+          for f in $(find . -name '*.html' -not -path './.git/*'); do
+            for ref in $(grep -oE '(href|src)="[^"]+"' "$f" \
+                         | sed -E 's/^(href|src)="//; s/"$//' \
+                         | grep -vE '^(https?:|mailto:|tel:|#|/)'); do
+              path="$(dirname "$f")/${ref%%[?#]*}"
+              if [ ! -e "$path" ]; then
+                echo "MISSING: $ref (referenced by $f)"
+                missing=1
+              fi
+            done
+          done
+          exit $missing
+
+  deploy:
+    name: Deploy to Hetzner
+    needs: [validate]
+    # Only deploy on a direct push to main (not PRs, not other branches).
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy site (repo root -> web root)
+        # --delete is safe here because the site owns /var/www/html/zentrix
+        # outright; nothing server-only lives in that directory.
+        run: |
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key" \
+            --exclude='.git' --exclude='.github' --exclude='.claude' \
+            --exclude='node_modules' --exclude='*.md' \
+            ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/var/www/html/zentrix/"
+
+      - name: Fix ownership, reload nginx, health-check
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" '
+            set -e
+            chown -R www-data:www-data /var/www/html/zentrix
+            nginx -t
+            systemctl reload nginx
+            systemctl is-active nginx
+            # Serve-path check: confirm nginx actually returns the deployed
+            # index, not just that the process is up.
+            code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: zentrixaisoftsolutions.com" http://127.0.0.1/)
+            if [ "$code" != "200" ]; then
+              echo "health check failed: got HTTP $code from nginx"
+              tail -n 40 /var/log/nginx/error.log
+              exit 1
+            fi
+            echo "health: OK (nginx serving zentrix, HTTP 200)"
+          '
