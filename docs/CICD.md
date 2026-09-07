@@ -25,8 +25,15 @@ build and test stages — this is a static site with no build step and no test s
 1. `rsync` the repo root → `/var/www/html/zentrix/` with `--delete`, excluding
    `.git`, `.github`, `.claude`, `node_modules`, `*.md`.
 2. On the server: `chown www-data`, `nginx -t`, `systemctl reload nginx`.
-3. Health-check: curl nginx with a `Host: zentrixaisoftsolutions.com` header and
-   require HTTP 200 — confirms the site is actually served, not just that nginx is up.
+3. Health-check: curl the site over **https on 443** and require HTTP 200, then
+   grep the body for `zentrix` to confirm it is this vhost and not another.
+
+   Port matters here. The `zentrixaisoftsolutions.com` server block listens on
+   443 only; port 80 is a `default_server` catch-all that `return 301`s to https.
+   A plain http check therefore returns 301 and fails even on a good deploy --
+   which is exactly how the first pipeline run failed. The check uses
+   `curl --resolve zentrixaisoftsolutions.com:443:127.0.0.1` so it gets correct
+   SNI and a real certificate check without depending on external DNS.
 
 The deploy job fails (visible red in Actions) if nginx does not return 200.
 

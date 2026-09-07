@@ -112,10 +112,12 @@ jobs:
       - name: Deploy site (repo root -> web root)
         # --delete is safe here because the site owns /var/www/html/zentrix
         # outright; nothing server-only lives in that directory.
+        # docs/ and .gitattributes are repo metadata, not site assets.
         run: |
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key" \
             --exclude='.git' --exclude='.github' --exclude='.claude' \
-            --exclude='node_modules' --exclude='*.md' \
+            --exclude='node_modules' --exclude='*.md' --exclude='docs' \
+            --exclude='.gitattributes' \
             ./ "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/var/www/html/zentrix/"
 
       - name: Fix ownership, reload nginx, health-check
@@ -126,13 +128,30 @@ jobs:
             nginx -t
             systemctl reload nginx
             systemctl is-active nginx
+
             # Serve-path check: confirm nginx actually returns the deployed
             # index, not just that the process is up.
-            code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: zentrixaisoftsolutions.com" http://127.0.0.1/)
+            #
+            # Must hit 443, not 80. The zentrixaisoftsolutions.com server block
+            # listens on 443 only; port 80 is a catch-all that 301s to https, so
+            # a plain http check returns 301 and fails even on a good deploy.
+            # --resolve pins the hostname to loopback, giving correct SNI and a
+            # real cert check without depending on external DNS.
+            URL=https://zentrixaisoftsolutions.com/
+            PIN=zentrixaisoftsolutions.com:443:127.0.0.1
+
+            code=$(curl -s -o /dev/null -w "%{http_code}" --resolve "$PIN" "$URL")
             if [ "$code" != "200" ]; then
               echo "health check failed: got HTTP $code from nginx"
               tail -n 40 /var/log/nginx/error.log
               exit 1
             fi
-            echo "health: OK (nginx serving zentrix, HTTP 200)"
+
+            # Confirm it is *this* site being served, not some other vhost.
+            if ! curl -s --resolve "$PIN" "$URL" | grep -qi zentrix; then
+              echo "health check failed: HTTP 200 but content is not the Zentrix site"
+              exit 1
+            fi
+
+            echo "health: OK (https vhost serving zentrix, HTTP 200)"
           '
