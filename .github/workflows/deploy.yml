@@ -110,8 +110,12 @@ jobs:
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy site (repo root -> web root)
-        # --delete is safe here because the site owns /var/www/html/zentrix
-        # outright; nothing server-only lives in that directory.
+        # --delete makes the web root match this repo exactly, so anything
+        # served from zentrixaisoftsolutions.com MUST be committed here.
+        # A hand-placed privacy/ page previously lived on the server and was
+        # wiped by the first run of this workflow, which broke the Google Play
+        # listing for Zentrix Smart School. It is now versioned in privacy/,
+        # and the health check below verifies it survives every deploy.
         # docs/ and .gitattributes are repo metadata, not site assets.
         run: |
           rsync -az --delete -e "ssh -i ~/.ssh/deploy_key" \
@@ -153,5 +157,14 @@ jobs:
               exit 1
             fi
 
-            echo "health: OK (https vhost serving zentrix, HTTP 200)"
+            # /privacy must serve the real policy page, not the nginx
+            # try_files fallback to index.html (which returns a misleading 200).
+            # Google Play polls this exact URL for the Zentrix Smart School
+            # listing and flagged the app "Invalid Privacy policy" when it broke.
+            if ! curl -s --resolve "$PIN" "${URL}privacy/" | grep -qi "Privacy Policy"; then
+              echo "health check failed: /privacy is not serving the policy page"
+              exit 1
+            fi
+
+            echo "health: OK (https vhost serving zentrix + /privacy, HTTP 200)"
           '
